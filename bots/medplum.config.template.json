@@ -4,6 +4,11 @@
       "name": "metriport-embed-token",
       "source": "src/metriportEmbedToken.ts",
       "dist": "dist/metriportEmbedToken.js"
+    },
+    {
+      "name": "metriport-link-patient",
+      "source": "src/metriportLinkPatient.ts",
+      "dist": "dist/metriportLinkPatient.js"
     }
   ]
 }

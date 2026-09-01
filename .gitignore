@@ -25,3 +25,6 @@ package-lock.json
 *.njsproj
 *.sln
 *.sw?
+
+# Local planning notes
+.plans/

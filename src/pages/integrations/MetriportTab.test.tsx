@@ -1,17 +1,22 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { MantineProvider } from '@mantine/core';
+import type { Identifier } from '@medplum/fhirtypes';
 import { HomerSimpson, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { METRIPORT_EMBED_TOKEN_BOT, METRIPORT_LINK_PATIENT_BOT } from '../../utils/metriport';
 import { MetriportTab } from './MetriportTab';
 
-// The bot is located by name at runtime; the lookup itself is covered by useMetriportAccess.
-vi.mock('../../hooks/useMetriportAccess', () => ({
-  useMetriportAccess: () => ({ botId: 'bot-1', hasAccess: true, loading: false }),
-}));
+/**
+ * @param botId - The first argument the tab passed to executeBot.
+ * @returns Which bot it addressed. Bots are executed by identifier, never by ID.
+ */
+function botName(botId: unknown): string | undefined {
+  return (botId as Identifier).value;
+}
 
 const OK_SESSION = {
   status: 'ok',
@@ -58,16 +63,57 @@ describe('MetriportTab', () => {
       );
     });
 
-    expect(executeBot).toHaveBeenCalledWith('bot-1', { patientId: HomerSimpson.id }, 'application/json');
+    expect(executeBot).toHaveBeenCalledWith(
+      METRIPORT_EMBED_TOKEN_BOT,
+      { patientId: HomerSimpson.id },
+      'application/json'
+    );
   });
 
-  test('Shows an empty state when the patient is not linked to Metriport', async () => {
-    vi.spyOn(medplum, 'executeBot').mockResolvedValue({ status: 'not-linked' });
+  test('Links the patient automatically when it is not linked yet', async () => {
+    let linked = false;
+    const executeBot = vi.spyOn(medplum, 'executeBot').mockImplementation(async (botId) => {
+      if (botName(botId) === METRIPORT_LINK_PATIENT_BOT.value) {
+        linked = true;
+        return { status: 'linked', metriportPatientId: 'metriport-patient-1', created: true };
+      }
+      return linked ? OK_SESSION : { status: 'not-linked' };
+    });
 
     setup();
 
-    expect(await screen.findByText('This patient is not linked to Metriport')).toBeInTheDocument();
-    expect(document.querySelector('iframe[title="Metriport"]')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(document.querySelector('iframe[title="Metriport"]')).toBeInTheDocument();
+    });
+
+    expect(executeBot).toHaveBeenCalledWith(
+      METRIPORT_LINK_PATIENT_BOT,
+      { patientId: HomerSimpson.id, create: true },
+      'application/json'
+    );
+  });
+
+  test("Shows Metriport's reason when it rejects the demographics", async () => {
+    // Medplum wraps a bot failure in JSON carrying errorMessage and a stack trace.
+    vi.spyOn(medplum, 'executeBot').mockImplementation(async (botId) => {
+      if (botName(botId) === METRIPORT_LINK_PATIENT_BOT.value) {
+        throw new Error(
+          JSON.stringify({
+            errorType: 'MetriportApiError',
+            errorMessage: 'Metriport: Zip must be a string consisting of 5 numbers, on [address,0,zip] (400)',
+            trace: ['at metriportRequest'],
+          })
+        );
+      }
+      return { status: 'not-linked' };
+    });
+
+    setup();
+
+    expect(await screen.findByText('Could not open Metriport')).toBeInTheDocument();
+    expect(
+      screen.getByText('Metriport: Zip must be a string consisting of 5 numbers, on [address,0,zip] (400)')
+    ).toBeInTheDocument();
   });
 
   test('Shows an error when the bot fails', async () => {

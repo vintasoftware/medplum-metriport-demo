@@ -61,15 +61,22 @@ Restart `npm run dev` after changing `.env`.
 
 The patient chart has a **Metriport** tab that embeds the
 [Metriport patient view](https://docs.metriport.com/medical-api/getting-started/embedding) for the
-open patient. The tab and its route only appear in projects where the bot below is deployed.
+open patient.
 
-Embedding needs a short-lived embed token, and creating one requires the Metriport API key. The key
-must never reach the browser, so the token is created by the `metriport-embed-token` Medplum Bot in
-[`bots/`](./bots). The bot resolves which Metriport patient to open from the Medplum
-`Patient.identifier`, so the caller cannot choose it, and records every issued token as an
-`AuditEvent` (references only, no PHI values).
+Everything that needs the Metriport API key runs in Medplum Bots in [`bots/`](./bots), never in the
+browser. The tab and its route only appear in projects where the embed token bot is deployed.
 
-#### Deploying the bot
+| Bot                      | Role                                                                               |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| `metriport-embed-token`  | Creates the short-lived embed token for the open chart. Required for the tab.      |
+| `metriport-link-patient` | Links the chart to a Metriport patient: match, else create. Optional but expected. |
+
+The embed bot resolves which Metriport patient to open from the Medplum `Patient.identifier`, so the
+caller cannot choose it. Both bots record an `AuditEvent` — token issuance as a record access, and
+sending demographics to Metriport as a disclosure — with references and opaque IDs only, no PHI
+values.
+
+#### Deploying the bots
 
 The Medplum CLI needs Node 22 or later. On Node 20 it fails with `ReferenceError: WebSocket is not defined`.
 
@@ -82,26 +89,35 @@ npm run deploy             # build, find or create the bot by name, then deploy
 ```
 
 Bot IDs differ per project, so none is committed: only `medplum.config.template.json` is tracked,
-and `npm run deploy` finds the bot named `metriport-embed-token` in the project you are logged in
-to, creates it when missing, and writes the resolved ID into the generated `medplum.config.json`.
-The app finds the same bot by name.
+and `npm run deploy` locates each bot in the project you are logged in to, creates the missing ones,
+stamps the identifier the app addresses it with, and writes the resolved IDs into the generated
+`medplum.config.json`.
+
+The app executes the bots by identifier — `https://medplum.com/integrations/metriport|<bot name>` —
+the same way this app already calls its DoseSpot, ScriptSure, Health Gorilla, and Candid bots. No Bot
+ID appears in the app or in tracked config.
 
 #### Project secrets
 
-Set these in [Project Admin → Secrets](https://app.medplum.com/admin/secrets). The bot reads them at
+Set these in [Project Admin → Secrets](https://app.medplum.com/admin/secrets). The bots read them at
 run time.
 
-| Secret                               | Required | Notes                               |
-| ------------------------------------ | -------- | ----------------------------------- |
-| `METRIPORT_API_KEY`                  | yes      | Must match the environment below    |
-| `METRIPORT_ENV`                      | no       | `sandbox` (default) or `production` |
-| `METRIPORT_TOKEN_EXPIRATION_SECONDS` | no       | Default 900, max 36000              |
+| Secret                               | Required | Notes                                             |
+| ------------------------------------ | -------- | ------------------------------------------------- |
+| `METRIPORT_API_KEY`                  | yes      | Must match the environment below                  |
+| `METRIPORT_ENV`                      | no       | `sandbox` (default) or `production`               |
+| `METRIPORT_TOKEN_EXPIRATION_SECONDS` | no       | Default 900, max 36000                            |
+| `METRIPORT_FACILITY_ID`              | no       | Needed to create patients; see the fallback below |
 
 Sandbox tokens only work with sandbox embed URLs and production tokens only with production URLs.
-The bot pairs them for you.
+The bots pair them for you.
 
-Give the bot an `AccessPolicy` that allows only `Patient` read and `AuditEvent` write, and restrict
-which project members may execute it — see the security note below.
+Without `METRIPORT_FACILITY_ID`, the link patient bot falls back to the
+`https://metriport.com/fhir/identifiers/organization-id` identifier on the patient's managing
+`Organization`, and refuses to create a patient when neither is available.
+
+Give the bots an `AccessPolicy` that allows only `Patient` read and write plus `AuditEvent` write,
+and restrict which project members may execute them — see the security note below.
 
 #### Linking a patient to Metriport
 
@@ -112,16 +128,37 @@ Metriport patient ID as an identifier:
 { "system": "https://metriport.com/fhir/identifiers/patient-id", "value": "<metriport patient uuid>" }
 ```
 
-Get that ID from the Metriport dashboard, or from the
-[match](https://docs.metriport.com/medical-api/api-reference/patient/match-patient) or
-[create](https://docs.metriport.com/medical-api/api-reference/patient/create-patient) patient
-endpoints. To create the link automatically instead of by hand, deploy `metriport-patient-bot` from
-[medplum-demo-bots](https://github.com/medplum/medplum/tree/main/examples/medplum-demo-bots/src/metriport-bots).
-In sandbox, create the Metriport patient with first name `Jane`, `Chris`, or `Kyla` to get example
-clinical data — see [Sandbox Mode](https://docs.metriport.com/medical-api/getting-started/sandbox).
+With `metriport-link-patient` deployed, this happens by itself the first time someone opens the
+Metriport tab for an unlinked patient:
 
-Write the identifier in the Medplum app under **Patient → Edit → Identifier → Add**, or with the CLI,
-appending to any identifiers the patient already has:
+1. The patient's demographics go to Metriport's
+   [match](https://docs.metriport.com/medical-api/api-reference/patient/match-patient) endpoint. A
+   hit stores the ID on the Patient and the record loads.
+2. No match, and the patient is
+   [created](https://docs.metriport.com/medical-api/api-reference/patient/create-patient) under the
+   configured facility with `externalId` set to the Medplum Patient ID, then linked.
+
+**Opening the tab therefore discloses the patient's demographics to Metriport**, without a separate
+confirmation step. Each attempt is recorded as a disclosure `AuditEvent`. Restrict who may execute
+the bot if that is wider than you want.
+
+Metriport validates the demographics and names the field it rejects, for example
+`Zip must be a string consisting of 5 numbers, on [address,0,zip]`. The tab shows that reason as-is,
+rather than repeating Metriport's rules in this codebase where they would drift. Metriport needs at
+least first and last name, date of birth, gender, and a US address.
+
+The bot is idempotent: an already-linked patient returns its existing ID without contacting
+Metriport.
+
+To test in sandbox, copy the demographics of one of the personas in
+[Sandbox Mode](https://docs.metriport.com/medical-api/getting-started/sandbox) onto a Medplum
+Patient. Those personas already exist in the sandbox and carry example clinical data, so the match
+resolves on the first view. Copy the whole record from that page, not just the name — the match runs
+on name, date of birth, gender, and address together.
+
+To link by hand instead, write the identifier in the Medplum app under
+**Patient → Edit → Identifier → Add**, or with the CLI, appending to any identifiers the patient
+already has:
 
 ```bash
 npx medplum patch Patient/MEDPLUM_PATIENT_ID \
