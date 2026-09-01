@@ -66,10 +66,10 @@ open patient.
 Everything that needs the Metriport API key runs in Medplum Bots in [`bots/`](./bots), never in the
 browser. The tab and its route only appear in projects where the embed token bot is deployed.
 
-| Bot                      | Role                                                                               |
-| ------------------------ | ---------------------------------------------------------------------------------- |
-| `metriport-embed-token`  | Creates the short-lived embed token for the open chart. Required for the tab.      |
-| `metriport-link-patient` | Links the chart to a Metriport patient: match, else create. Optional but expected. |
+| Bot                      | Role                                                                          |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| `metriport-embed-token`  | Creates the short-lived embed token for the open chart. Required for the tab. |
+| `metriport-link-patient` | Connects the chart: match or create the patient, then start a network query.  |
 
 The embed bot resolves which Metriport patient to open from the Medplum `Patient.identifier`, so the
 caller cannot choose it. Both bots record an `AuditEvent` — token issuance as a record access, and
@@ -102,12 +102,13 @@ ID appears in the app or in tracked config.
 Set these in [Project Admin → Secrets](https://app.medplum.com/admin/secrets). The bots read them at
 run time.
 
-| Secret                               | Required | Notes                                             |
-| ------------------------------------ | -------- | ------------------------------------------------- |
-| `METRIPORT_API_KEY`                  | yes      | Must match the environment below                  |
-| `METRIPORT_ENV`                      | no       | `sandbox` (default) or `production`               |
-| `METRIPORT_TOKEN_EXPIRATION_SECONDS` | no       | Default 900, max 36000                            |
-| `METRIPORT_FACILITY_ID`              | no       | Needed to create patients; see the fallback below |
+| Secret                               | Required | Notes                                                    |
+| ------------------------------------ | -------- | -------------------------------------------------------- |
+| `METRIPORT_API_KEY`                  | yes      | Must match the environment below                         |
+| `METRIPORT_ENV`                      | no       | `sandbox` (default) or `production`                      |
+| `METRIPORT_TOKEN_EXPIRATION_SECONDS` | no       | Default 900, max 36000                                   |
+| `METRIPORT_FACILITY_ID`              | no       | Needed to create patients; see the fallback below        |
+| `METRIPORT_NETWORK_QUERY_SOURCES`    | no       | Comma separated: `hie`, `pharmacy`, `lab`. Default `hie` |
 
 Sandbox tokens only work with sandbox embed URLs and production tokens only with production URLs.
 The bots pair them for you.
@@ -128,27 +129,35 @@ Metriport patient ID as an identifier:
 { "system": "https://metriport.com/fhir/identifiers/patient-id", "value": "<metriport patient uuid>" }
 ```
 
-With `metriport-link-patient` deployed, this happens by itself the first time someone opens the
-Metriport tab for an unlinked patient:
+With `metriport-link-patient` deployed, the tab shows a **Connect to Metriport** button for a patient with no Metriport ID. Pressing it:
 
-1. The patient's demographics go to Metriport's
+1. Sends the patient's demographics to Metriport's
    [match](https://docs.metriport.com/medical-api/api-reference/patient/match-patient) endpoint. A
-   hit stores the ID on the Patient and the record loads.
-2. No match, and the patient is
-   [created](https://docs.metriport.com/medical-api/api-reference/patient/create-patient) under the
-   configured facility with `externalId` set to the Medplum Patient ID, then linked.
+   hit stores the ID on the Patient.
+2. On no match,
+   [creates](https://docs.metriport.com/medical-api/api-reference/patient/create-patient) the patient
+   under the configured facility with `externalId` set to the Medplum Patient ID, then links it.
+3. Starts a [network query](https://docs.metriport.com/medical-api/api-reference/network/start-network-query),
+   because registering a patient does not search the networks on its own. Results take minutes to
+   arrive, and reach Metriport's record, not Medplum's — see the plan for ingesting them.
 
-**Opening the tab therefore discloses the patient's demographics to Metriport**, without a separate
-confirmation step. Each attempt is recorded as a disclosure `AuditEvent`. Restrict who may execute
-the bot if that is wider than you want.
+**Nothing reaches Metriport until a provider presses that button.** Opening the chart discloses
+nothing. Each attempt is recorded as a disclosure `AuditEvent`.
 
 Metriport validates the demographics and names the field it rejects, for example
 `Zip must be a string consisting of 5 numbers, on [address,0,zip]`. The tab shows that reason as-is,
 rather than repeating Metriport's rules in this codebase where they would drift. Metriport needs at
 least first and last name, date of birth, gender, and a US address.
 
-The bot is idempotent: an already-linked patient returns its existing ID without contacting
+The bot is idempotent: an already-connected patient returns its existing ID without contacting
 Metriport.
+
+**A connected patient cannot be re-queried yet.** The button only appears while the patient has no
+Metriport ID, so the network query runs exactly once, when they are first connected. Records that
+arrive later at the networks will not be picked up. Adding a "Refresh from the network" action for
+connected patients also means adding a cooldown, the way Metriport's own Canvas integration does
+with `isDqCooldownExpired`, so repeated presses do not spam the networks. Until then, re-query from
+the Metriport dashboard.
 
 To test in sandbox, copy the demographics of one of the personas in
 [Sandbox Mode](https://docs.metriport.com/medical-api/getting-started/sandbox) onto a Medplum

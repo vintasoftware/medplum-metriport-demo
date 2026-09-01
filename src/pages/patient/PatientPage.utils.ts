@@ -43,26 +43,20 @@ export function getPatientPageTabOrThrow(tabId: string): PatientPageTabInfo {
  * @param options.hasDoseSpotAccess - When provided, controls DoseSpot tab visibility directly
  *   (supports self-enrollment via PractitionerRole in addition to existing identifiers).
  *   When omitted, falls back to checking the membership for a DoseSpot identifier.
- * @param options.hasMetriportAccess - True when the Metriport embed token bot is deployed in the
- *   project. The Metriport tab is hidden when it is not.
  * @returns Filtered array of patient page tabs.
  */
 export function getPatientPageTabs(
   membership: ProjectMembership | undefined,
-  options?: { hasDoseSpotAccess?: boolean; hasMetriportAccess?: boolean }
+  options?: { hasDoseSpotAccess?: boolean }
 ): PatientPageTabInfo[] {
   const hasDoseSpot = options?.hasDoseSpotAccess ?? hasDoseSpotIdentifier(membership);
   const hasScriptSure = hasScriptSureIdentifier(membership);
-  const hasMetriport = options?.hasMetriportAccess ?? false;
   return PatientPageTabs.filter((tab) => {
     if (tab.id === 'dosespot') {
       return hasDoseSpot;
     }
     if (tab.id === 'scriptsure') {
       return hasScriptSure;
-    }
-    if (tab.id === 'metriport') {
-      return hasMetriport;
     }
     return true;
   });

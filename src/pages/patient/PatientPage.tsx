@@ -17,7 +17,6 @@ import { useCallback, useMemo, useState } from 'react';
 import { Outlet, useNavigate } from 'react-router';
 import { usePharmacyDialog } from '../../components/pharmacy/usePharmacyDialog';
 import { useDoseSpotAccess } from '../../hooks/useDoseSpotAccess';
-import { useMetriportAccess } from '../../hooks/useMetriportAccess';
 import { usePatient } from '../../hooks/usePatient';
 import { OrderLabsPage } from '../labs/OrderLabsPage';
 import classes from './PatientPage.module.css';
@@ -32,8 +31,7 @@ export function PatientPage(): JSX.Element {
   const [isLabsModalOpen, setIsLabsModalOpen] = useState(false);
   const PharmacyDialogComponent = usePharmacyDialog();
   const { hasAccess: hasDoseSpotAccess } = useDoseSpotAccess();
-  const { hasAccess: hasMetriportAccess } = useMetriportAccess();
-  const tabs = getPatientPageTabs(membership, { hasDoseSpotAccess, hasMetriportAccess });
+  const tabs = getPatientPageTabs(membership, { hasDoseSpotAccess });
   const resolvedTabs = useMemo(
     () =>
       tabs.map((t) => ({

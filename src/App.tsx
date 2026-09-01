@@ -23,7 +23,6 @@ import { Suspense, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router';
 import { hasScriptSureIdentifier } from './components/utils';
 import { useDoseSpotAccess } from './hooks/useDoseSpotAccess';
-import { useMetriportAccess } from './hooks/useMetriportAccess';
 import './index.css';
 import { ScriptSurePracticeProvider } from './scriptsure/ScriptSurePractice';
 
@@ -85,7 +84,6 @@ export function App(): JSX.Element | null {
   );
   const setupDismissed = setupDisabledByProject || setupDismissedByUser;
   const { hasAccess: hasDoseSpot } = useDoseSpotAccess();
-  const { hasAccess: hasMetriport } = useMetriportAccess();
   const membership = medplum.getProjectMembership();
   const hasScriptSure = hasScriptSureIdentifier(membership);
   const hasBilling = project?.features?.includes('billing') ?? false;
@@ -262,7 +260,7 @@ export function App(): JSX.Element | null {
                 <Route path="Task/:taskId/new" element={<TasksTab />} />
                 {hasDoseSpot && <Route path="dosespot" element={<DoseSpotTab />} />}
                 {hasScriptSure && <Route path="scriptsure" element={<ScriptSureTab />} />}
-                {hasMetriport && <Route path="metriport" element={<MetriportTab />} />}
+                <Route path="metriport" element={<MetriportTab />} />
                 <Route path="timeline" element={<TimelineTab />} />
                 <Route path="export" element={<ExportTab />} />
                 <Route path="ServiceRequest" element={<LabsPage tab="open" />} />

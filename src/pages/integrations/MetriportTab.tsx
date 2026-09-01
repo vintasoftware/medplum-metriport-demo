@@ -1,13 +1,18 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Alert, Box, Center, Loader, Stack, Text } from '@mantine/core';
+import { Alert, Box, Button, Center, Loader, Stack, Text } from '@mantine/core';
 import { useMedplum } from '@medplum/react';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router';
 import type { MetriportEmbedSession } from '../../utils/metriport';
-import { buildMetriportPatientEmbedUrl, describeBotError, openMetriportSession } from '../../utils/metriport';
+import {
+  buildMetriportPatientEmbedUrl,
+  describeBotError,
+  getMetriportSession,
+  linkMetriportPatient,
+} from '../../utils/metriport';
 
 /**
  * Metriport patient view, embedded in the patient chart.
@@ -16,9 +21,9 @@ import { buildMetriportPatientEmbedUrl, describeBotError, openMetriportSession }
  * patient belongs to this chart. The token is short lived and stays in memory and in the iframe
  * URL fragment.
  *
- * A patient who is not linked to Metriport yet is linked on first view by the
- * `metriport-link-patient` bot: match first, then create. That sends demographics to Metriport,
- * which the bot records as a disclosure AuditEvent.
+ * A patient with no Metriport ID is connected on demand: the provider presses the button, and the
+ * `metriport-link-patient` bot matches or creates the patient and starts a network query. Nothing
+ * reaches Metriport until that press.
  *
  * @see https://docs.metriport.com/medical-api/getting-started/embedding
  */
@@ -27,7 +32,7 @@ export function MetriportTab(): JSX.Element {
   const { patientId } = useParams();
   const [session, setSession] = useState<MetriportEmbedSession>();
   const [error, setError] = useState<string>();
-  const [linking, setLinking] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   // Generation counter, so a response for a previous patient never overwrites the current one.
   const requestRef = useRef(0);
 
@@ -37,25 +42,15 @@ export function MetriportTab(): JSX.Element {
     }
 
     const requestId = ++requestRef.current;
-    const isCurrent = (): boolean => requestRef.current === requestId;
 
     try {
-      const result = await openMetriportSession(medplum, patientId, () => {
-        if (isCurrent()) {
-          setLinking(true);
-        }
-      });
-
-      if (isCurrent()) {
+      const result = await getMetriportSession(medplum, patientId);
+      if (requestRef.current === requestId) {
         setSession(result);
       }
     } catch (err) {
-      if (isCurrent()) {
+      if (requestRef.current === requestId) {
         setError(describeBotError(err));
-      }
-    } finally {
-      if (isCurrent()) {
-        setLinking(false);
       }
     }
   }, [medplum, patientId]);
@@ -66,10 +61,31 @@ export function MetriportTab(): JSX.Element {
     void loadSession();
   }, [loadSession]);
 
+  const handleConnect = async (): Promise<void> => {
+    if (!patientId) {
+      return;
+    }
+
+    setConnecting(true);
+    setError(undefined);
+    try {
+      const result = await linkMetriportPatient(medplum, patientId);
+      if (result.status === 'linked') {
+        await loadSession();
+      } else {
+        setError('Metriport could not match or create this patient.');
+      }
+    } catch (err) {
+      setError(describeBotError(err));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   if (error) {
     return (
       <Box p="md">
-        <Alert color="red" icon={<IconAlertTriangle />} title="Could not open Metriport">
+        <Alert color="red" icon={<IconAlertTriangle />} title="Could not connect to Metriport">
           {error}
         </Alert>
       </Box>
@@ -79,14 +95,7 @@ export function MetriportTab(): JSX.Element {
   if (!session) {
     return (
       <Center h={200}>
-        <Stack align="center" gap="xs">
-          <Loader />
-          {linking && (
-            <Text size="sm" c="dimmed">
-              Linking this patient to Metriport…
-            </Text>
-          )}
-        </Stack>
+        <Loader />
       </Center>
     );
   }
@@ -95,10 +104,14 @@ export function MetriportTab(): JSX.Element {
     return (
       <Center h={200}>
         <Stack align="center" gap="xs">
-          <Text fw={500}>This patient is not linked to Metriport</Text>
+          <Text fw={500}>This patient is not connected to Metriport</Text>
           <Text size="sm" c="dimmed" ta="center" maw={480}>
-            Metriport has no record for this patient, and could not create one.
+            Connecting sends this patient&apos;s demographics to Metriport, then searches the health data networks for
+            their records. Results take a few minutes to arrive.
           </Text>
+          <Button mt="xs" loading={connecting} onClick={() => void handleConnect()}>
+            Connect to Metriport
+          </Button>
         </Stack>
       </Center>
     );

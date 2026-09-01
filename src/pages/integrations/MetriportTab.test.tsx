@@ -5,6 +5,7 @@ import type { Identifier } from '@medplum/fhirtypes';
 import { HomerSimpson, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { METRIPORT_EMBED_TOKEN_BOT, METRIPORT_LINK_PATIENT_BOT } from '../../utils/metriport';
@@ -70,17 +71,22 @@ describe('MetriportTab', () => {
     );
   });
 
-  test('Links the patient automatically when it is not linked yet', async () => {
+  test('Connects the patient when the provider presses the button', async () => {
     let linked = false;
     const executeBot = vi.spyOn(medplum, 'executeBot').mockImplementation(async (botId) => {
       if (botName(botId) === METRIPORT_LINK_PATIENT_BOT.value) {
         linked = true;
-        return { status: 'linked', metriportPatientId: 'metriport-patient-1', created: true };
+        return { status: 'linked', metriportPatientId: 'metriport-patient-1' };
       }
       return linked ? OK_SESSION : { status: 'not-linked' };
     });
 
     setup();
+
+    const button = await screen.findByRole('button', { name: 'Connect to Metriport' });
+    expect(document.querySelector('iframe[title="Metriport"]')).not.toBeInTheDocument();
+
+    await userEvent.click(button);
 
     await waitFor(() => {
       expect(document.querySelector('iframe[title="Metriport"]')).toBeInTheDocument();
@@ -89,6 +95,21 @@ describe('MetriportTab', () => {
     expect(executeBot).toHaveBeenCalledWith(
       METRIPORT_LINK_PATIENT_BOT,
       { patientId: HomerSimpson.id, create: true },
+      'application/json'
+    );
+  });
+
+  test('Sends nothing to Metriport until the button is pressed', async () => {
+    const executeBot = vi.spyOn(medplum, 'executeBot').mockResolvedValue({ status: 'not-linked' });
+
+    setup();
+
+    await screen.findByRole('button', { name: 'Connect to Metriport' });
+
+    expect(executeBot).toHaveBeenCalledTimes(1);
+    expect(executeBot).toHaveBeenCalledWith(
+      METRIPORT_EMBED_TOKEN_BOT,
+      { patientId: HomerSimpson.id },
       'application/json'
     );
   });
@@ -110,7 +131,7 @@ describe('MetriportTab', () => {
 
     setup();
 
-    expect(await screen.findByText('Could not open Metriport')).toBeInTheDocument();
+    expect(await screen.findByText('Could not connect to Metriport')).toBeInTheDocument();
     expect(
       screen.getByText('Metriport: Zip must be a string consisting of 5 numbers, on [address,0,zip] (400)')
     ).toBeInTheDocument();
@@ -121,7 +142,7 @@ describe('MetriportTab', () => {
 
     setup();
 
-    expect(await screen.findByText('Could not open Metriport')).toBeInTheDocument();
+    expect(await screen.findByText('Could not connect to Metriport')).toBeInTheDocument();
     expect(screen.getByText('Metriport returned 401')).toBeInTheDocument();
   });
 });

@@ -24,15 +24,23 @@ import {
  * demographics and names the field it rejects, so that error is passed on rather than re-checked
  * here.
  *
+ * After linking, a network query is started, so Metriport searches the health data networks for the
+ * patient's records. Registering a patient does not query on its own.
+ *
  * Input: `{ patientId, create? }`
  *
  * Secrets, in addition to those in ./shared/metriport:
  * - `METRIPORT_FACILITY_ID` (needed to create; falls back to the managing Organization identifier)
+ * - `METRIPORT_NETWORK_QUERY_SOURCES` (comma separated: hie, pharmacy, lab. Default hie)
  *
  * https://docs.metriport.com/medical-api/api-reference/patient/match-patient
  * https://docs.metriport.com/medical-api/api-reference/patient/create-patient
+ * https://docs.metriport.com/medical-api/api-reference/network/start-network-query
  */
 const METRIPORT_ORGANIZATION_IDENTIFIER_SYSTEM = 'https://metriport.com/fhir/identifiers/organization-id';
+
+// Pharmacy and lab are available too, but only HIE returns data for the sandbox personas.
+const DEFAULT_NETWORK_QUERY_SOURCES = 'hie';
 
 export interface MetriportLinkPatientInput {
   patientId: string;
@@ -41,7 +49,7 @@ export interface MetriportLinkPatientInput {
 }
 
 export type MetriportLinkPatientOutput =
-  | { status: 'linked'; metriportPatientId: string; created: boolean }
+  | { status: 'linked'; metriportPatientId: string }
   /** Metriport has no patient matching these demographics, and `create` was not requested. */
   | { status: 'no-match' };
 
@@ -61,7 +69,7 @@ export async function handler(
   // Already linked. Callers can run this on every chart open.
   const existingId = getMetriportPatientId(patient);
   if (existingId) {
-    return { status: 'linked', metriportPatientId: existingId, created: false };
+    return { status: 'linked', metriportPatientId: existingId };
   }
 
   const demographics = buildDemographics(patient);
@@ -91,13 +99,57 @@ export async function handler(
 
   await linkPatient(medplum, patient, metriportPatientId);
 
+  const networkQueryRequestId = await startNetworkQuery(config, event, metriportPatientId, patientId);
+
+  const linkDescription = created
+    ? 'Patient created in Metriport and linked'
+    : 'Patient matched in Metriport and linked';
+
   await writeMetriportAuditEvent(medplum, event, 'disclosure', {
     patientId,
     metriportPatientId,
-    description: created ? 'Patient created in Metriport and linked' : 'Patient matched in Metriport and linked',
+    description: networkQueryRequestId ? `${linkDescription}, network query started` : linkDescription,
   });
 
-  return { status: 'linked', metriportPatientId, created };
+  return { status: 'linked', metriportPatientId };
+}
+
+/**
+ * Asks Metriport to search the health data networks for this patient's records.
+ *
+ * The patient is already linked at this point, so a failure here is reported but does not undo the
+ * link: the chart still opens, and the query can be started again.
+ *
+ * @param config - The Metriport configuration.
+ * @param event - The bot event, for the sources secret.
+ * @param metriportPatientId - The Metriport patient to search for.
+ * @param medplumPatientId - Sent as metadata, so the result webhook can find its way back.
+ * @returns The Metriport request ID, or undefined when the query could not be started.
+ */
+async function startNetworkQuery(
+  config: MetriportConfig,
+  event: BotEvent<MetriportLinkPatientInput>,
+  metriportPatientId: string,
+  medplumPatientId: string
+): Promise<string | undefined> {
+  const sources = (getSecret(event, 'METRIPORT_NETWORK_QUERY_SOURCES') ?? DEFAULT_NETWORK_QUERY_SOURCES)
+    .split(',')
+    .map((source) => source.trim())
+    .filter(Boolean);
+
+  try {
+    const response = await metriportRequest<{ requestId: string }>(
+      config,
+      `/medical/v1/network/query?patientId=${encodeURIComponent(metriportPatientId)}`,
+      // The webhook that delivers the results has no other way back to the Medplum patient.
+      { sources, metadata: { medplumPatientId } }
+    );
+    return response.requestId;
+  } catch (err) {
+    // Status only: the message carries no patient data, and the link itself stands.
+    console.error(`[metriport] could not start the network query: ${err instanceof Error ? err.message : 'unknown'}`);
+    return undefined;
+  }
 }
 
 /**

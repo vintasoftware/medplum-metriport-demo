@@ -42,7 +42,7 @@ export type MetriportEmbedSession =
  * @param patientId - The Medplum Patient ID whose chart is open.
  * @returns The embed session, or a not-linked result when the patient has no Metriport identifier.
  */
-async function createMetriportEmbedSession(medplum: MedplumClient, patientId: string): Promise<MetriportEmbedSession> {
+export async function getMetriportSession(medplum: MedplumClient, patientId: string): Promise<MetriportEmbedSession> {
   return medplum.executeBot(METRIPORT_EMBED_TOKEN_BOT, { patientId }, 'application/json');
 }
 
@@ -62,56 +62,21 @@ export function buildMetriportPatientEmbedUrl(session: Extract<MetriportEmbedSes
 }
 
 /** Mirrors the bot response in bots/src/metriportLinkPatient.ts. */
-export type MetriportLinkResult =
-  { status: 'linked'; metriportPatientId: string; created: boolean } | { status: 'no-match' };
+export type MetriportLinkResult = { status: 'linked'; metriportPatientId: string } | { status: 'no-match' };
 
 /**
- * Links a patient chart to a Metriport patient.
+ * Connects a patient chart to Metriport and starts a network query.
  *
- * Matching sends demographics to Metriport, so this only runs when a provider asks for it.
- *
- * The bot creates the patient in Metriport when no match is found, so the chart always ends up with
- * a Metriport record when the demographics allow one.
+ * The bot matches the patient in Metriport, creates them when there is no match, stores the ID on
+ * the Patient, and asks Metriport to search the health data networks for their records. All of that
+ * discloses demographics to Metriport, so it only runs when a provider asks for it.
  *
  * @param medplum - The Medplum client.
  * @param patientId - The Medplum Patient ID whose chart is open.
  * @returns The link result.
  */
-async function linkMetriportPatient(medplum: MedplumClient, patientId: string): Promise<MetriportLinkResult> {
+export async function linkMetriportPatient(medplum: MedplumClient, patientId: string): Promise<MetriportLinkResult> {
   return medplum.executeBot(METRIPORT_LINK_PATIENT_BOT, { patientId, create: true }, 'application/json');
-}
-
-/**
- * Opens the Metriport session for a patient chart, linking the patient on first view.
- *
- * Two bots are involved: the embed token bot reports whether the chart is linked, and the link
- * patient bot links it. An already linked chart costs one call.
- *
- * @param medplum - The Medplum client.
- * @param patientId - The Medplum Patient ID whose chart is open.
- * @param onLinkStart - Called when linking begins, so the caller can report the wait.
- * @returns The embed session. Still `not-linked` when linking was impossible.
- */
-export async function openMetriportSession(
-  medplum: MedplumClient,
-  patientId: string,
-  onLinkStart?: () => void
-): Promise<MetriportEmbedSession> {
-  const session = await createMetriportEmbedSession(medplum, patientId);
-  if (session.status !== 'not-linked') {
-    return session;
-  }
-
-  onLinkStart?.();
-  const link = await linkMetriportPatient(medplum, patientId);
-
-  // A rejected request throws, so the caller reports Metriport's reason. Any other non-link result
-  // leaves the chart unlinked.
-  if (link.status !== 'linked') {
-    return session;
-  }
-
-  return createMetriportEmbedSession(medplum, patientId);
 }
 
 /**
