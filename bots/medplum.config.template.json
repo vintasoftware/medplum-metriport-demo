@@ -1,0 +1,9 @@
+{
+  "bots": [
+    {
+      "name": "metriport-embed-token",
+      "source": "src/metriportEmbedToken.ts",
+      "dist": "dist/metriportEmbedToken.js"
+    }
+  ]
+}
