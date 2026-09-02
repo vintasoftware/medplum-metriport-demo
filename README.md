@@ -1,31 +1,56 @@
-<h1 align="center">Medplum Provider</h1>
-<p align="center">A starter application for building a health record system on Medplum.</p>
+<h1 align="center">Medplum + Metriport Demo</h1>
+<p align="center">A demo EHR that pulls a patient's outside medical records into the chart, built on Medplum and Metriport.</p>
 <p align="center">
 <a href="https://github.com/medplum/medplum-hello-world/blob/main/LICENSE.txt">
     <img src="https://img.shields.io/badge/license-Apache-blue.svg" />
   </a>
 </p>
 
-This example app demonstrates the following:
+## Overview
 
-- Using [Medplum React Components](https://storybook.medplum.com/?path=/docs/medplum-introduction--docs) to display a chart that provides visibility on a patient
-  - More information on a [charting experience](https://www.medplum.com/docs/charting)
-- Using [Medplum GraphQL](https://graphiql.medplum.com/) queries to fetch linked resources
+This is a demo application. It is the [Medplum Provider](https://github.com/medplum/medplum/tree/main/examples/medplum-provider) starter EHR with a working [Metriport](https://docs.metriport.com/medical-api) integration added to it. Use it to try the integration end to end, or as a reference for the same feature in your own Medplum app.
 
-### Workflows
+[Medplum](https://www.medplum.com/) is the chart: an open-source, API-first EHR that stores the FHIR data. Metriport is the source of outside records: it queries health information exchanges for a patient and returns what the networks hold.
 
-The application will feature the following core workflows:
+The integration adds a **Metriport** tab to the patient chart, with three things a provider can do:
 
-- Visit documentation
-- Task creation and assignment
-- Appointment scheduling
-- Patient registration/onboarding
-- Lab orders
-- Ordering medications
-- Claim creation and billing
-- Patient/Provider Messaging
+1. **Connect the patient.** Match the patient in Metriport, or create them, and start a network query.
+2. **Read their outside records.** Metriport's own patient view, framed in the chart.
+3. **Import records into the chart.** Tick problems, allergies, medications or immunizations and write them into Medplum as FHIR resources.
 
-### Getting Started
+### How it fits together
+
+The Metriport API key never reaches the browser. Everything that needs it runs in three [Medplum Bots](https://www.medplum.com/docs/bots), which the app executes by identifier:
+
+```
+Browser (React app)  ──execute──▶  Medplum Bot  ──API key──▶  Metriport API
+       │
+       └──FHIR transaction, provider's own credentials──▶  Medplum chart
+```
+
+Imports are written by the browser, not by a bot, so your project `AccessPolicy` decides what may enter the chart and Medplum audits the writes.
+
+### Where the code lives
+
+| Path                                                  | What it holds                                        |
+| ----------------------------------------------------- | ---------------------------------------------------- |
+| [`bots/src/`](./bots/src)                             | The three bots and their shared Metriport API client |
+| [`src/pages/integrations/`](./src/pages/integrations) | The Metriport tab, the import view and its tests     |
+| [`src/utils/metriport.ts`](./src/utils/metriport.ts)  | Identifier systems and bot names shared by the app   |
+
+The rest of the repo is the unmodified starter app, which also demonstrates:
+
+- [Medplum React Components](https://storybook.medplum.com/?path=/docs/medplum-introduction--docs) rendering a patient chart — more on the [charting experience](https://www.medplum.com/docs/charting)
+- [Medplum GraphQL](https://graphiql.medplum.com/) queries fetching linked resources
+- Starter workflows: visit documentation, tasks, scheduling, patient onboarding, lab orders, medication ordering, billing and messaging
+
+### What you need
+
+- Node 22 or later
+- A Medplum project — hosted or [local](https://www.medplum.com/docs/contributing/run-the-stack)
+- A Metriport account and API key. A [sandbox](https://docs.metriport.com/medical-api/getting-started/sandbox) key is enough to test the whole flow.
+
+## Getting Started
 
 If you haven't already done so, follow the instructions in [this tutorial](https://www.medplum.com/docs/tutorials/register) to register a Medplum project to store your data.
 
@@ -53,7 +78,10 @@ This app should run on `http://localhost:3001/`
 
 By default, the app connects to the hosted Medplum service at `https://api.medplum.com/`.
 
-### Running against a local Medplum server
+At this point you have the starter EHR, with no Metriport tab yet. See
+[Metriport integration](#metriport-integration) below to deploy the bots and turn it on.
+
+## Running against a local Medplum server
 
 To run against a Medplum server on your own machine, follow the [Run the stack](https://www.medplum.com/docs/contributing/run-the-stack) guide to start the API server on port 8103, then edit `.env` in this directory:
 
@@ -63,18 +91,19 @@ MEDPLUM_BASE_URL=http://localhost:8103/
 
 Restart `npm run dev` after changing `.env`.
 
-### Metriport integration
+## Metriport integration
 
-[Metriport](https://docs.metriport.com/medical-api) is a third-party health data API. This app calls
-its public Medical API with an account key, and adds a **Metriport** tab to the patient chart. That
-tab has two views: the
+Set up the three bots and the project secrets below, and the **Metriport** tab appears on the patient
+chart. Until then the app runs as the plain starter EHR: the tab and its route only appear where the
+embed token bot is deployed.
+
+The tab has two views. **Patient record** frames the
 [Metriport patient view](https://docs.metriport.com/medical-api/getting-started/embedding) in an
 `iframe` — a page Metriport hosts, which this app only frames, called "the embedded patient view"
-below — and an import view of this app's own.
+below. **Import records** is this app's own.
 
-You need a Metriport account and an API key. Set up the three bots and the project secrets below, and
-the tab appears. Everything that needs the API key runs in Medplum Bots in [`bots/`](./bots), never
-in the browser, and the tab and its route only appear where the embed token bot is deployed.
+Everything that needs the API key runs in the Medplum Bots in [`bots/`](./bots), never in the
+browser.
 
 | Bot                      | Role                                                                          |
 | ------------------------ | ----------------------------------------------------------------------------- |
@@ -83,11 +112,11 @@ in the browser, and the tab and its route only appear where the embed token bot 
 | `metriport-consolidated` | Reads the patient's records back out of Metriport, for review and import.     |
 
 The embed bot resolves which Metriport patient to open from the Medplum `Patient.identifier`, so the
-caller cannot choose it. Both bots record an `AuditEvent` — token issuance as a record access, and
-sending demographics to Metriport as a disclosure — with references and opaque IDs only, no PHI
-values.
+caller cannot choose it. The embed token and link patient bots each record an `AuditEvent` — token
+issuance as a record access, sending demographics to Metriport as a disclosure — with references and
+opaque IDs only, no PHI values.
 
-#### Deploying the bots
+### Deploying the bots
 
 ```bash
 cd bots
@@ -106,7 +135,7 @@ The app executes the bots by identifier — `https://medplum.com/integrations/me
 the same way this app already calls its DoseSpot, ScriptSure, Health Gorilla, and Candid bots. No Bot
 ID appears in the app or in tracked config.
 
-#### Project secrets
+### Project secrets
 
 Set these in [Project Admin → Secrets](https://app.medplum.com/admin/secrets). The bots read them at
 run time.
@@ -131,7 +160,7 @@ and restrict which project members may execute them — see the security note be
 bot needs nothing more: it reads from Metriport and returns the records to the browser, and the
 provider's own session writes them into the chart.
 
-#### Linking a patient to Metriport
+### Linking a patient to Metriport
 
 The tab shows "This patient is not connected to Metriport" until the Medplum Patient carries the
 Metriport patient ID as an identifier. That identifier is also how the tab knows, so an unconnected
@@ -182,7 +211,7 @@ npx medplum patch Patient/MEDPLUM_PATIENT_ID \
 If the patient has no identifiers yet, patch `"path": "/identifier"` with an array value instead —
 appending to a missing array fails.
 
-#### Importing records from Metriport
+### Importing records from Metriport
 
 The Metriport tab has two views. **Patient record** is the embedded patient view, which is read only.
 **Import records** lists what Metriport holds for the patient and writes the ones a provider ticks
@@ -222,7 +251,7 @@ Resource types are allowlisted in the bot rather than chosen by the browser: `Al
 `Condition`, `Immunization`, `MedicationAdministration`, `MedicationDispense`, `MedicationRequest`
 and `MedicationStatement`. Widening the import view means widening that list too.
 
-#### Security note
+### Security note
 
 A Metriport embed token authorizes the embedded app for the whole Metriport account; only the URL
 path selects the patient. The bot decides which patient the app opens, but the token it returns to
@@ -232,11 +261,31 @@ lifetime, an `AccessPolicy` that limits who may execute the bot, and the `AuditE
 writes. The app asks for a token only when the view that frames Metriport is on screen, so fewer
 are issued than there are visits to the tab.
 
-### A note on value sets
+## What else you can build
+
+This demo uses a small part of the Metriport API. The consolidated query returns
+[more than twenty FHIR resource types](https://docs.metriport.com/medical-api/api-reference/fhir/consolidated-data-query-post#available-fhir-resources)
+— encounters, observations, procedures, diagnostic reports, coverage, family history and the source
+documents themselves — of which this app imports four. Instead of polling after a network query, you
+can register a [webhook](https://docs.metriport.com/medical-api/handling-data/webhooks-with-nq) and
+have Metriport tell you when new data lands, run
+[scheduled queries](https://docs.metriport.com/medical-api/handling-data/scheduled-queries) so the
+chart keeps refreshing on its own, or subscribe to
+[real-time patient notifications](https://docs.metriport.com/medical-api/handling-data/realtime-patient-notifications)
+to react the moment a patient is admitted or discharged. Beyond retrieval there is a
+[medical record summary](https://docs.metriport.com/medical-api/handling-data/medical-record-summary)
+as a single PDF or HTML file, [AI summaries](https://docs.metriport.com/medical-api/handling-data/ai-summaries)
+of a patient's history, [care gaps and suspecting](https://docs.metriport.com/medical-api/handling-data/care-gaps),
+[cohorts](https://docs.metriport.com/medical-api/handling-data/cohorts) to apply settings to a group
+of patients, [data contribution](https://docs.metriport.com/medical-api/handling-data/contribution)
+to write your own records back to the networks, and
+[patient opt-out](https://docs.metriport.com/medical-api/handling-data/opt-out) controls.
+
+## A note on value sets
 
 Some fields in this app (diagnoses, medications, race/ethnicity, and others) autocomplete against clinical terminologies such as ICD-10, RxNorm, and US Core / VSAC value sets. On hosted Medplum, these are provided by shared projects [linked](https://www.medplum.com/docs/access/projects#project-linking) into your project. A fresh self-hosted or local server includes only the base FHIR R4 terminology, so these fields will show a "ValueSet not found" message inline and you will need to enter codes manually. To enable them, upload the value sets and import their code systems into a shared project (see [`CodeSystem/$import`](https://www.medplum.com/docs/api/fhir/operations/codesystem-import)) and link that project, or contact Medplum for access to the hosted terminology.
 
-### About Medplum
+## About Medplum
 
 [Medplum](https://www.medplum.com/) is an open-source, API-first EHR. Medplum makes it easy to build healthcare apps quickly with less code.
 
