@@ -133,8 +133,9 @@ provider's own session writes them into the chart.
 
 #### Linking a patient to Metriport
 
-The tab shows "This patient is not linked to Metriport" until the Medplum Patient carries the
-Metriport patient ID as an identifier:
+The tab shows "This patient is not connected to Metriport" until the Medplum Patient carries the
+Metriport patient ID as an identifier. That identifier is also how the tab knows, so an unconnected
+patient costs no bot execution at all:
 
 ```json
 { "system": "https://metriport.com/fhir/identifiers/patient-id", "value": "<metriport patient uuid>" }
@@ -196,6 +197,13 @@ The counts in the import view will not always match the numbers in the embedded 
 import view counts FHIR records; the embedded view groups them, so one problem recorded at four
 visits is four records in one list and often one line in the other.
 
+Each view pays only for itself. The embed token is created when the patient record view is shown,
+not when the tab opens, so a link straight to `?view=import` mints no Metriport credential and its
+own read starts on the first render. What Metriport answers is then kept for as long as the view is
+open, so going back to the category list and opening a category again, or returning to a date range
+already read, costs nothing; the refresh button and the retry both drop it and ask again. The chart
+is read again every time, because an import changes what it says.
+
 Two things to know when setting this up:
 
 - **The first read after a network query is slow and will fail.** Metriport prepares the data on
@@ -221,7 +229,8 @@ path selects the patient. The bot decides which patient the app opens, but the t
 the browser could still be pointed at another Metriport patient by anyone who knows that patient ID.
 Metriport does not offer a patient-scoped token today. Reduce the exposure with a short token
 lifetime, an `AccessPolicy` that limits who may execute the bot, and the `AuditEvent` trail the bot
-writes.
+writes. The app asks for a token only when the view that frames Metriport is on screen, so fewer
+are issued than there are visits to the tab.
 
 ### A note on value sets
 

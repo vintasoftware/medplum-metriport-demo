@@ -12,6 +12,7 @@ import {
   METRIPORT_CONSOLIDATED_BOT,
   METRIPORT_EMBED_TOKEN_BOT,
   METRIPORT_LINK_PATIENT_BOT,
+  METRIPORT_PATIENT_IDENTIFIER_SYSTEM,
 } from '../../utils/metriport';
 import { MetriportTab } from './MetriportTab';
 
@@ -40,9 +41,25 @@ describe('MetriportTab', () => {
     vi.restoreAllMocks();
   });
 
-  const setup = (): ReturnType<typeof render> => {
+  /**
+   * Stamps the Metriport patient ID onto the chart's Patient.
+   *
+   * The tab reads whether a patient is connected off the Patient rather than asking a bot, so a test
+   * about either view has to connect the patient first.
+   */
+  const linkPatient = async (): Promise<void> => {
+    await medplum.updateResource({
+      ...HomerSimpson,
+      identifier: [
+        ...(HomerSimpson.identifier ?? []),
+        { system: METRIPORT_PATIENT_IDENTIFIER_SYSTEM, value: 'metriport-patient-1' },
+      ],
+    });
+  };
+
+  const setup = (search = ''): ReturnType<typeof render> => {
     return render(
-      <MemoryRouter initialEntries={[`/Patient/${HomerSimpson.id}/metriport`]}>
+      <MemoryRouter initialEntries={[`/Patient/${HomerSimpson.id}/metriport${search}`]}>
         <MedplumProvider medplum={medplum}>
           <MantineProvider>
             <Routes>
@@ -55,6 +72,7 @@ describe('MetriportTab', () => {
   };
 
   test('Renders the embed iframe with the token in the URL fragment', async () => {
+    await linkPatient();
     const executeBot = vi.spyOn(medplum, 'executeBot').mockResolvedValue(OK_SESSION);
 
     setup();
@@ -110,10 +128,30 @@ describe('MetriportTab', () => {
 
     await screen.findByRole('button', { name: 'Connect to Metriport' });
 
-    expect(executeBot).toHaveBeenCalledTimes(1);
+    // Not one bot execution. An unconnected patient has nothing in Metriport to read and no embed
+    // to frame, and the Patient the chart already holds is what says so.
+    expect(executeBot).not.toHaveBeenCalled();
+  });
+
+  test('Mints no embed token when the import view is what was opened', async () => {
+    await linkPatient();
+    const executeBot = vi.spyOn(medplum, 'executeBot').mockImplementation(async (botId) => {
+      if (botName(botId) === METRIPORT_CONSOLIDATED_BOT.value) {
+        return { status: 'counts', resources: { Condition: 4 } };
+      }
+      return OK_SESSION;
+    });
+
+    setup('?view=import');
+
+    expect(await screen.findByText('4 records')).toBeInTheDocument();
+
+    // A refresh or a shared link landing here used to wait on a token for the view next door, and
+    // mint a Metriport credential nobody framed. The counts now start on the first render instead.
+    expect(executeBot).not.toHaveBeenCalledWith(METRIPORT_EMBED_TOKEN_BOT, expect.anything(), expect.anything());
     expect(executeBot).toHaveBeenCalledWith(
-      METRIPORT_EMBED_TOKEN_BOT,
-      { patientId: HomerSimpson.id },
+      METRIPORT_CONSOLIDATED_BOT,
+      expect.objectContaining({ action: 'count' }),
       'application/json'
     );
   });
@@ -145,6 +183,7 @@ describe('MetriportTab', () => {
   });
 
   test('Switches to the import view and reads the Metriport counts', async () => {
+    await linkPatient();
     const executeBot = vi.spyOn(medplum, 'executeBot').mockImplementation(async (botId) => {
       if (botName(botId) === METRIPORT_CONSOLIDATED_BOT.value) {
         return { status: 'counts', total: 12, resources: { Condition: 9, Immunization: 3 } };
@@ -171,6 +210,7 @@ describe('MetriportTab', () => {
   });
 
   test('Reads no Metriport data while the patient record view is open', async () => {
+    await linkPatient();
     const executeBot = vi.spyOn(medplum, 'executeBot').mockResolvedValue(OK_SESSION);
 
     setup();
@@ -182,6 +222,7 @@ describe('MetriportTab', () => {
   });
 
   test('Shows an error when the bot fails', async () => {
+    await linkPatient();
     vi.spyOn(medplum, 'executeBot').mockRejectedValue(new Error('Metriport returned 401'));
 
     setup();

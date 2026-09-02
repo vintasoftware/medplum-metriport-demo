@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { Bundle, Resource } from '@medplum/fhirtypes';
 import { useMedplum } from '@medplum/react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
+import type { MetriportConsolidatedResult } from '../../utils/metriport';
 import { describeBotError, getMetriportCounts, getMetriportRecords } from '../../utils/metriport';
 import { showErrorNotification, showSuccessNotification } from '../../utils/notifications';
 import { buildMetriportImportBundle } from './MetriportImportPanel.bundle';
@@ -43,6 +44,11 @@ export interface UseMetriportImport {
  * category is open — which is the `category` search parameter, so a refresh or a shared link lands
  * in the same place. Each read cancels only itself, so opening a category cannot discard the counts.
  *
+ * What Metriport answered is remembered for as long as the view is open, so going back to the
+ * category list and opening a category again, or moving the date range back to one already read, is
+ * instant instead of another bot execution. The chart is always read again: it is a fraction of the
+ * cost, and it is what decides whether a row shows as already in the chart, which an import changes.
+ *
  * @param patientId - The Medplum Patient whose chart is open.
  * @param range - A value from DATE_RANGE_OPTIONS.
  * @param reloadKey - Changes to read Metriport again.
@@ -62,6 +68,42 @@ export function useMetriportImport(patientId: string, range: string, reloadKey: 
 
   const dateFrom = getDateFrom(range);
   const openCategoryEntry = METRIPORT_IMPORT_CATEGORIES.find((entry) => entry.id === categoryId);
+
+  // Metriport reads already asked for, by date range and category. A ref rather than a module cache:
+  // it lives exactly as long as the view, so closing the tab drops the records rather than keeping
+  // them for a patient nobody is looking at.
+  //
+  // The promise is held, not the result, so a read still in flight is joined rather than started
+  // again — which is also what stops React's development double render from executing every bot
+  // twice. A failed read is dropped, because the retry it offers has to reach Metriport.
+  const generation = `${patientId}|${reloadKey}`;
+  const cacheRef = useRef(new Map<string, Promise<MetriportConsolidatedResult>>());
+  const cacheGenerationRef = useRef(generation);
+  if (cacheGenerationRef.current !== generation) {
+    // A different patient, or a refresh asking Metriport again. Either way nothing held here still
+    // answers the question being asked.
+    cacheGenerationRef.current = generation;
+    cacheRef.current = new Map();
+  }
+
+  const readCached = useCallback(
+    (key: string, read: () => Promise<MetriportConsolidatedResult>): Promise<MetriportConsolidatedResult> => {
+      const cache = cacheRef.current;
+      const cached = cache.get(key);
+      if (cached) {
+        return cached;
+      }
+      const pending = read().catch((err: unknown) => {
+        if (cache.get(key) === pending) {
+          cache.delete(key);
+        }
+        throw err;
+      });
+      cache.set(key, pending);
+      return pending;
+    },
+    []
+  );
 
   const openCategory = useCallback(
     (id: string | undefined): void => {
@@ -86,7 +128,7 @@ export function useMetriportImport(patientId: string, range: string, reloadKey: 
     setCounts(undefined);
     setCountsError(undefined);
 
-    getMetriportCounts(medplum, patientId, dateFrom)
+    readCached(`count|${dateFrom ?? 'all'}`, () => getMetriportCounts(medplum, patientId, dateFrom))
       .then((result) => {
         if (!cancelled) {
           setCounts(result.status === 'counts' ? result.resources : {});
@@ -101,7 +143,7 @@ export function useMetriportImport(patientId: string, range: string, reloadKey: 
     return () => {
       cancelled = true;
     };
-  }, [medplum, patientId, dateFrom, reloadKey]);
+  }, [medplum, patientId, dateFrom, reloadKey, readCached]);
 
   useEffect(() => {
     if (!openCategoryEntry) {
@@ -113,7 +155,9 @@ export function useMetriportImport(patientId: string, range: string, reloadKey: 
     setCategory({ status: 'loading', category: openCategoryEntry });
 
     Promise.all([
-      getMetriportRecords(medplum, patientId, [...openCategoryEntry.resourceTypes], dateFrom),
+      readCached(`fetch|${openCategoryEntry.id}|${dateFrom ?? 'all'}`, () =>
+        getMetriportRecords(medplum, patientId, [...openCategoryEntry.resourceTypes], dateFrom)
+      ),
       loadChartKeys(medplum, openCategoryEntry.resourceTypes, patientId),
     ])
       .then(([result, chartKeys]) => {
@@ -153,7 +197,7 @@ export function useMetriportImport(patientId: string, range: string, reloadKey: 
     return () => {
       cancelled = true;
     };
-  }, [medplum, patientId, dateFrom, reloadKey, openCategoryEntry]);
+  }, [medplum, patientId, dateFrom, reloadKey, openCategoryEntry, readCached]);
 
   const importRecords = useCallback(
     (keys: string[]): void => {

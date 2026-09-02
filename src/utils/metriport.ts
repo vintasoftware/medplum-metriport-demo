@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { MedplumClient } from '@medplum/core';
 import { normalizeErrorString } from '@medplum/core';
-import type { Bundle, Identifier } from '@medplum/fhirtypes';
+import type { Bundle, Identifier, Patient } from '@medplum/fhirtypes';
 
 // Identifier system shared by the deployed Metriport integration bots. Bots are addressed by
 // identifier, so no Bot ID is hardcoded and the same build works in every project. The deploy
@@ -29,6 +29,24 @@ export const METRIPORT_CONSOLIDATED_BOT: Identifier = {
   system: METRIPORT_INTEGRATION_SYSTEM,
   value: 'metriport-consolidated',
 };
+
+// Identifier the Metriport patient ID is stored under on the Medplum Patient. Same system the bots
+// use, in bots/src/shared/metriport.ts.
+export const METRIPORT_PATIENT_IDENTIFIER_SYSTEM = 'https://metriport.com/fhir/identifiers/patient-id';
+
+/**
+ * True when the chart already carries a Metriport patient ID.
+ *
+ * The identifier is on the Patient the chart has already loaded, so whether a patient is connected
+ * is known without asking a bot. That keeps the embed token — the one call that mints a Metriport
+ * credential — for the view that actually frames Metriport.
+ *
+ * @param patient - The Medplum Patient whose chart is open.
+ * @returns True when the patient is connected to Metriport.
+ */
+export function isMetriportLinked(patient: Patient): boolean {
+  return patient.identifier?.some((id) => id.system === METRIPORT_PATIENT_IDENTIFIER_SYSTEM && !!id.value) ?? false;
+}
 
 /** Mirrors the bot response in bots/src/metriportEmbedToken.ts. */
 export type MetriportEmbedSession =

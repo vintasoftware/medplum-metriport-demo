@@ -20,12 +20,14 @@ import { useMedplum } from '@medplum/react';
 import { IconAlertTriangle, IconRefresh } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
+import { usePatient } from '../../hooks/usePatient';
 import type { MetriportEmbedSession } from '../../utils/metriport';
 import {
   buildMetriportPatientEmbedUrl,
   describeBotError,
   getMetriportSession,
+  isMetriportLinked,
   linkMetriportPatient,
 } from '../../utils/metriport';
 import { MetriportImportPanel } from './MetriportImportPanel';
@@ -44,6 +46,12 @@ const IMPORT_VIEW = 'import';
  * and stays in memory and in the iframe URL fragment. **Import records** is where data moves the
  * other way, into the chart.
  *
+ * Whether the patient is connected is read off the Patient the chart has already loaded, so the tab
+ * decides what to render without a round trip, and the embed token is fetched only for the view that
+ * frames Metriport. Landing on the import view therefore costs no embed token at all: it mints no
+ * Metriport credential, and the import view's own read starts immediately rather than behind a bot
+ * execution it has no use for.
+ *
  * A patient with no Metriport ID is connected on demand: the provider presses the button, and the
  * `metriport-link-patient` bot matches or creates the patient and starts a network query. Nothing
  * reaches Metriport until that press, and neither view has anything to show before it, so the tabs
@@ -53,13 +61,18 @@ const IMPORT_VIEW = 'import';
  */
 export function MetriportTab(): JSX.Element {
   const medplum = useMedplum();
-  const { patientId } = useParams();
+  const patient = usePatient();
+  const patientId = patient?.id;
   const [searchParams, setSearchParams] = useSearchParams();
   const view = searchParams.get('view') === IMPORT_VIEW ? IMPORT_VIEW : RECORD_VIEW;
   const range = searchParams.get('range') ?? DEFAULT_DATE_RANGE;
   const [session, setSession] = useState<MetriportEmbedSession>();
   const [error, setError] = useState<string>();
   const [connecting, setConnecting] = useState(false);
+  // Set by a successful link, because the Patient the chart holds was read before the bot stamped
+  // the identifier onto it.
+  const [justLinked, setJustLinked] = useState(false);
+  const linked = justLinked || (patient ? isMetriportLinked(patient) : undefined);
   // Bumped to re-read Metriport. A network query keeps arriving after the chart is open, so the
   // import view needs a way to catch up without a full page reload. The refresh button below and the
   // retry inside the panel both come here, so there is one counter rather than two.
@@ -107,11 +120,21 @@ export function MetriportTab(): JSX.Element {
     }
   }, [medplum, patientId]);
 
+  // The token is only worth minting for the view that frames Metriport, and only once: it outlives
+  // a switch to the import view and back.
+  useEffect(() => {
+    if (view !== RECORD_VIEW || !linked || session) {
+      return;
+    }
+    void loadSession();
+  }, [loadSession, view, linked, session]);
+
+  // A different patient invalidates the token that was issued for the last one.
   useEffect(() => {
     setSession(undefined);
     setError(undefined);
-    void loadSession();
-  }, [loadSession]);
+    setJustLinked(false);
+  }, [patientId]);
 
   const handleConnect = async (): Promise<void> => {
     if (!patientId) {
@@ -123,7 +146,7 @@ export function MetriportTab(): JSX.Element {
     try {
       const result = await linkMetriportPatient(medplum, patientId);
       if (result.status === 'linked') {
-        await loadSession();
+        setJustLinked(true);
       } else {
         setError('Metriport could not match or create this patient.');
       }
@@ -134,17 +157,11 @@ export function MetriportTab(): JSX.Element {
     }
   };
 
-  if (error) {
-    return (
-      <Box p="md">
-        <Alert color="red" icon={<IconAlertTriangle />} title="Could not connect to Metriport">
-          {error}
-        </Alert>
-      </Box>
-    );
-  }
+  // The embed bot can still report a patient the identifier says is connected as not connected, if
+  // the identifier was removed since the chart read it. Either answer lands on the same view.
+  const connected = linked && session?.status !== 'not-linked';
 
-  if (!patientId || !session) {
+  if (!patientId || linked === undefined) {
     return (
       <Center h={200}>
         <Loader />
@@ -152,15 +169,23 @@ export function MetriportTab(): JSX.Element {
     );
   }
 
-  if (session.status === 'not-linked') {
+  if (!connected) {
     return (
       <Center h={200}>
         <Stack align="center" gap="xs">
-          <Text fw={500}>This patient is not connected to Metriport</Text>
-          <Text size="sm" c="dimmed" ta="center" maw={480}>
-            Connecting sends this patient&apos;s demographics to Metriport, then searches the health data networks for
-            their records. Results take a few minutes to arrive.
-          </Text>
+          {error ? (
+            <Alert color="red" icon={<IconAlertTriangle />} title="Could not connect to Metriport">
+              {error}
+            </Alert>
+          ) : (
+            <>
+              <Text fw={500}>This patient is not connected to Metriport</Text>
+              <Text size="sm" c="dimmed" ta="center" maw={480}>
+                Connecting sends this patient&apos;s demographics to Metriport, then searches the health data networks
+                for their records. Results take a few minutes to arrive.
+              </Text>
+            </>
+          )}
           <Button mt="xs" loading={connecting} onClick={() => void handleConnect()}>
             Connect to Metriport
           </Button>
@@ -210,13 +235,51 @@ export function MetriportTab(): JSX.Element {
         {view === IMPORT_VIEW ? (
           <MetriportImportPanel patientId={patientId} range={range} reloadKey={reloadKey} onReload={reload} />
         ) : (
-          <iframe
-            title="Metriport"
-            src={buildMetriportPatientEmbedUrl(session)}
-            style={{ width: '100%', height: '100%', border: 'none' }}
-          />
+          <MetriportRecordView session={session} error={error} />
         )}
       </Box>
     </Stack>
+  );
+}
+
+/**
+ * The embedded patient view, and what stands in for it until its token arrives.
+ *
+ * The token is fetched when this view is shown rather than when the tab opens, so a failure here
+ * leaves the import view next door working.
+ *
+ * @param props - The MetriportRecordView React props.
+ * @returns The MetriportRecordView React node.
+ */
+function MetriportRecordView(props: {
+  readonly session?: MetriportEmbedSession;
+  readonly error?: string;
+}): JSX.Element {
+  const { session, error } = props;
+
+  if (error) {
+    return (
+      <Box p="md">
+        <Alert color="red" icon={<IconAlertTriangle />} title="Could not connect to Metriport">
+          {error}
+        </Alert>
+      </Box>
+    );
+  }
+
+  if (session?.status !== 'ok') {
+    return (
+      <Center h={200}>
+        <Loader />
+      </Center>
+    );
+  }
+
+  return (
+    <iframe
+      title="Metriport"
+      src={buildMetriportPatientEmbedUrl(session)}
+      style={{ width: '100%', height: '100%', border: 'none' }}
+    />
   );
 }

@@ -152,6 +152,57 @@ describe('MetriportImportPanel', () => {
     expect(await screen.findByText('2 records')).toBeInTheDocument();
   });
 
+  test('Reads Metriport once for a category, however often it is opened', async () => {
+    const executeBot = mockMetriport();
+
+    setup();
+
+    expect(await screen.findByText('2 records')).toBeInTheDocument();
+
+    for (let visit = 0; visit < 2; visit++) {
+      await userEvent.click(screen.getAllByRole('button', { name: 'Review' })[0]);
+      expect(await screen.findByText('Type 2 diabetes mellitus')).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Back to categories' }));
+      expect(await screen.findByText('2 records')).toBeInTheDocument();
+    }
+
+    // One count and one fetch, for two visits to the category and three renders of the list. The
+    // chart is read again every time: it is cheap, and an import changes what it answers.
+    const actions = vi.mocked(medplum.executeBot).mock.calls.map((call) => (call[1] as { action: string }).action);
+    expect(actions).toStrictEqual(['count', 'fetch']);
+    expect(executeBot).not.toHaveBeenCalled();
+    expect(vi.mocked(medplum.searchResources).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  test('Asks Metriport again on a refresh, rather than repeating what it said', async () => {
+    let fetches = 0;
+    vi.spyOn(medplum, 'executeBot').mockImplementation(async (_botId, input) => {
+      const { action } = input as { action: string };
+      if (action === 'count') {
+        return { status: 'counts', total: 2, resources: { Condition: 2 } };
+      }
+      if (++fetches === 1) {
+        throw new Error('RequestId: abc Error: Task timed out after 60.00 seconds');
+      }
+      return { status: 'bundle', bundle: CONDITION_BUNDLE };
+    });
+    vi.spyOn(medplum, 'searchResources').mockResolvedValue([] as never);
+
+    setup('?category=problems');
+
+    expect(await screen.findByText('Metriport is still preparing this record')).toBeInTheDocument();
+
+    // A network query keeps arriving after the chart is open, so a refresh has to reach Metriport
+    // again — the counts included, cached or not.
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Type 2 diabetes mellitus')).toBeInTheDocument();
+    const counts = vi
+      .mocked(medplum.executeBot)
+      .mock.calls.filter((call) => (call[1] as { action: string }).action === 'count');
+    expect(counts).toHaveLength(2);
+  });
+
   test('Gives indistinguishable records a row each, rather than merging them', async () => {
     vi.spyOn(medplum, 'executeBot').mockImplementation(async (_botId, input) => {
       const { action } = input as { action: string };
