@@ -6,6 +6,8 @@
   </a>
 </p>
 
+https://github.com/user-attachments/assets/985ef2e8-99b3-4d6e-a4ee-ad12a6691c55
+
 ## Overview
 
 This is a demo application. It is the [Medplum Provider](https://github.com/medplum/medplum/tree/main/examples/medplum-provider) starter EHR with a working [Metriport](https://docs.metriport.com/medical-api) integration added to it. Use it to try the integration end to end, or as a reference for the same feature in your own Medplum app.
