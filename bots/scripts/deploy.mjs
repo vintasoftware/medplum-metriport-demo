@@ -101,6 +101,24 @@ function ensureIdentifier(bot, name) {
   runMedplum(['patch', `Bot/${bot.id}`, JSON.stringify(patch)]);
 }
 
+/**
+ * Raises the bot's execution time limit when the template asks for one.
+ *
+ * A bot that calls a slow third-party API needs more than the Medplum default of 10 seconds. The
+ * server caps this, so a value above the project maximum is refused rather than silently applied.
+ *
+ * @param bot - The bot resource.
+ * @param timeout - The maximum execution time in seconds, or undefined to leave it alone.
+ */
+function ensureTimeout(bot, timeout) {
+  if (!timeout || bot.timeout === timeout) {
+    return;
+  }
+
+  console.log(`Setting timeout ${timeout}s on Bot/${bot.id}`);
+  runMedplum(['patch', `Bot/${bot.id}`, JSON.stringify([{ op: 'add', path: '/timeout', value: timeout }])]);
+}
+
 const template = JSON.parse(readFileSync(TEMPLATE_PATH, 'utf8'));
 const projectId = getProjectId();
 const bots = [];
@@ -115,7 +133,10 @@ for (const entry of template.bots) {
   }
 
   ensureIdentifier(bot, entry.name);
-  bots.push({ ...entry, id: bot.id });
+  ensureTimeout(bot, entry.timeout);
+  // `timeout` is ours, not the CLI's: it belongs on the Bot resource, not in the deploy config.
+  const { timeout, ...deployEntry } = entry;
+  bots.push({ ...deployEntry, id: bot.id });
 }
 
 writeFileSync(CONFIG_PATH, `${JSON.stringify({ bots }, null, 2)}\n`);

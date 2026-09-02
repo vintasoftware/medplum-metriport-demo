@@ -31,6 +31,12 @@ If you haven't already done so, follow the instructions in [this tutorial](https
 
 [Fork](https://github.com/medplum/medplum-provider/fork) and clone the repo. Alternatively, this app lives in the [Medplum monorepo](https://github.com/medplum/medplum) at `examples/medplum-provider` — if you are working from the monorepo, run `npm ci` and `npm run build` at the repo root first so the workspace packages are built.
 
+This project runs on Node 22 or later, which is pinned in `.nvmrc`.
+
+```bash
+nvm use
+```
+
 Next, install the dependencies.
 
 ```bash
@@ -59,17 +65,22 @@ Restart `npm run dev` after changing `.env`.
 
 ### Metriport integration
 
-The patient chart has a **Metriport** tab that embeds the
-[Metriport patient view](https://docs.metriport.com/medical-api/getting-started/embedding) for the
-open patient.
+[Metriport](https://docs.metriport.com/medical-api) is a third-party health data API. This app calls
+its public Medical API with an account key, and adds a **Metriport** tab to the patient chart. That
+tab has two views: the
+[Metriport patient view](https://docs.metriport.com/medical-api/getting-started/embedding) in an
+`iframe` — a page Metriport hosts, which this app only frames, called "the embedded patient view"
+below — and an import view of this app's own.
 
-Everything that needs the Metriport API key runs in Medplum Bots in [`bots/`](./bots), never in the
-browser. The tab and its route only appear in projects where the embed token bot is deployed.
+You need a Metriport account and an API key. Set up the three bots and the project secrets below, and
+the tab appears. Everything that needs the API key runs in Medplum Bots in [`bots/`](./bots), never
+in the browser, and the tab and its route only appear where the embed token bot is deployed.
 
 | Bot                      | Role                                                                          |
 | ------------------------ | ----------------------------------------------------------------------------- |
 | `metriport-embed-token`  | Creates the short-lived embed token for the open chart. Required for the tab. |
 | `metriport-link-patient` | Connects the chart: match or create the patient, then start a network query.  |
+| `metriport-consolidated` | Reads the patient's records back out of Metriport, for review and import.     |
 
 The embed bot resolves which Metriport patient to open from the Medplum `Patient.identifier`, so the
 caller cannot choose it. Both bots record an `AuditEvent` — token issuance as a record access, and
@@ -78,11 +89,9 @@ values.
 
 #### Deploying the bots
 
-The Medplum CLI needs Node 22 or later. On Node 20 it fails with `ReferenceError: WebSocket is not defined`.
-
 ```bash
 cd bots
-nvm use 22
+nvm use
 npm install
 npx medplum login          # or put a ClientApplication id/secret in bots/.env, see bots/.env.example
 npm run deploy             # build, find or create the bot by name, then deploy
@@ -118,7 +127,9 @@ Without `METRIPORT_FACILITY_ID`, the link patient bot falls back to the
 `Organization`, and refuses to create a patient when neither is available.
 
 Give the bots an `AccessPolicy` that allows only `Patient` read and write plus `AuditEvent` write,
-and restrict which project members may execute them — see the security note below.
+and restrict which project members may execute them — see the security note below. The consolidated
+bot needs nothing more: it reads from Metriport and returns the records to the browser, and the
+provider's own session writes them into the chart.
 
 #### Linking a patient to Metriport
 
@@ -142,32 +153,25 @@ With `metriport-link-patient` deployed, the tab shows a **Connect to Metriport**
    arrive, and reach Metriport's record, not Medplum's — see the plan for ingesting them.
 
 **Nothing reaches Metriport until a provider presses that button.** Opening the chart discloses
-nothing. Each attempt is recorded as a disclosure `AuditEvent`.
+nothing. Each attempt is recorded as a disclosure `AuditEvent`. Pressing it again for an already
+connected patient does nothing: the bot returns the stored ID without contacting Metriport.
 
-Metriport validates the demographics and names the field it rejects, for example
-`Zip must be a string consisting of 5 numbers, on [address,0,zip]`. The tab shows that reason as-is,
-rather than repeating Metriport's rules in this codebase where they would drift. Metriport needs at
-least first and last name, date of birth, gender, and a US address.
+Metriport needs at least a first and last name, a date of birth, a gender and a US address. It
+validates them and names the field it rejects, for example
+`Zip must be a string consisting of 5 numbers, on [address,0,zip]`, and the tab shows that reason
+as-is.
 
-The bot is idempotent: an already-connected patient returns its existing ID without contacting
-Metriport.
-
-**A connected patient cannot be re-queried yet.** The button only appears while the patient has no
-Metriport ID, so the network query runs exactly once, when they are first connected. Records that
-arrive later at the networks will not be picked up. Adding a "Refresh from the network" action for
-connected patients also means adding a cooldown, the way Metriport's own Canvas integration does
-with `isDqCooldownExpired`, so repeated presses do not spam the networks. Until then, re-query from
-the Metriport dashboard.
+**A connected patient cannot be re-queried from this app yet.** The button only appears while the
+patient has no Metriport ID, so the network query runs once. Records reaching the networks later are
+not picked up — re-query from the Metriport dashboard.
 
 To test in sandbox, copy the demographics of one of the personas in
 [Sandbox Mode](https://docs.metriport.com/medical-api/getting-started/sandbox) onto a Medplum
-Patient. Those personas already exist in the sandbox and carry example clinical data, so the match
-resolves on the first view. Copy the whole record from that page, not just the name — the match runs
-on name, date of birth, gender, and address together.
+Patient. Copy the whole record, not just the name: the match runs on name, date of birth, gender and
+address together.
 
-To link by hand instead, write the identifier in the Medplum app under
-**Patient → Edit → Identifier → Add**, or with the CLI, appending to any identifiers the patient
-already has:
+To link a patient by hand, add the identifier in the Medplum app under
+**Patient → Edit → Identifier → Add**, or with the CLI:
 
 ```bash
 npx medplum patch Patient/MEDPLUM_PATIENT_ID \
@@ -176,6 +180,39 @@ npx medplum patch Patient/MEDPLUM_PATIENT_ID \
 
 If the patient has no identifiers yet, patch `"path": "/identifier"` with an array value instead —
 appending to a missing array fails.
+
+#### Importing records from Metriport
+
+The Metriport tab has two views. **Patient record** is the embedded patient view, which is read only.
+**Import records** lists what Metriport holds for the patient and writes the ones a provider ticks
+into the chart. Both views are addressed by the URL (`?view=import&category=problems`), so a refresh
+or a shared link lands in the same place.
+
+Four categories can be imported — problems, allergies, medications and immunizations — because each
+has a section in the Medplum patient summary to land in. The embedded patient view shows more than
+that, and the import view says so on screen, so the difference reads as a known gap.
+
+The counts in the import view will not always match the numbers in the embedded patient view. The
+import view counts FHIR records; the embedded view groups them, so one problem recorded at four
+visits is four records in one list and often one line in the other.
+
+Two things to know when setting this up:
+
+- **The first read after a network query is slow and will fail.** Metriport prepares the data on
+  demand, and that takes longer than a bot may run. The view says so and offers a retry, which
+  succeeds. Medplum allows a bot 10 seconds by default, so the template sets `"timeout": 60` on
+  `metriport-consolidated` and `npm run deploy` patches it onto the `Bot`. A project whose maximum is
+  lower will refuse that value.
+- **Records already in the chart are marked and cannot be imported twice.** Every entry is written as
+  a conditional create, so a repeated import writes nothing.
+
+The import is a FHIR transaction sent with the provider's own credentials, so your project
+`AccessPolicy` decides what may enter the chart, and Medplum audits the writes. The bot itself needs
+no write access for this.
+
+Resource types are allowlisted in the bot rather than chosen by the browser: `AllergyIntolerance`,
+`Condition`, `Immunization`, `MedicationAdministration`, `MedicationDispense`, `MedicationRequest`
+and `MedicationStatement`. Widening the import view means widening that list too.
 
 #### Security note
 

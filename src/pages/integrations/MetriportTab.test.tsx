@@ -8,7 +8,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { METRIPORT_EMBED_TOKEN_BOT, METRIPORT_LINK_PATIENT_BOT } from '../../utils/metriport';
+import {
+  METRIPORT_CONSOLIDATED_BOT,
+  METRIPORT_EMBED_TOKEN_BOT,
+  METRIPORT_LINK_PATIENT_BOT,
+} from '../../utils/metriport';
 import { MetriportTab } from './MetriportTab';
 
 /**
@@ -131,10 +135,50 @@ describe('MetriportTab', () => {
 
     setup();
 
+    // Demographics only leave Medplum on the press, so the rejection only surfaces after it.
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect to Metriport' }));
+
     expect(await screen.findByText('Could not connect to Metriport')).toBeInTheDocument();
     expect(
       screen.getByText('Metriport: Zip must be a string consisting of 5 numbers, on [address,0,zip] (400)')
     ).toBeInTheDocument();
+  });
+
+  test('Switches to the import view and reads the Metriport counts', async () => {
+    const executeBot = vi.spyOn(medplum, 'executeBot').mockImplementation(async (botId) => {
+      if (botName(botId) === METRIPORT_CONSOLIDATED_BOT.value) {
+        return { status: 'counts', total: 12, resources: { Condition: 9, Immunization: 3 } };
+      }
+      return OK_SESSION;
+    });
+
+    setup();
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'Import records' }));
+
+    expect(await screen.findByText('Problems')).toBeInTheDocument();
+    expect(screen.getByText('9 records')).toBeInTheDocument();
+    // A category Metriport returned nothing for cannot be opened. The button carries no number:
+    // the count beside it does, and it is the count that changes once a category has been read.
+    const reviewButtons = screen.getAllByRole('button', { name: 'Review' });
+    expect(reviewButtons.filter((button) => !button.hasAttribute('disabled'))).toHaveLength(2);
+
+    expect(executeBot).toHaveBeenCalledWith(
+      METRIPORT_CONSOLIDATED_BOT,
+      expect.objectContaining({ patientId: HomerSimpson.id, action: 'count' }),
+      'application/json'
+    );
+  });
+
+  test('Reads no Metriport data while the patient record view is open', async () => {
+    const executeBot = vi.spyOn(medplum, 'executeBot').mockResolvedValue(OK_SESSION);
+
+    setup();
+
+    await waitFor(() => expect(document.querySelector('iframe[title="Metriport"]')).toBeInTheDocument());
+
+    expect(executeBot).toHaveBeenCalledTimes(1);
+    expect(executeBot).not.toHaveBeenCalledWith(METRIPORT_CONSOLIDATED_BOT, expect.anything(), expect.anything());
   });
 
   test('Shows an error when the bot fails', async () => {

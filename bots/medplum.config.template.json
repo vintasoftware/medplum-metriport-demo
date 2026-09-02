@@ -9,6 +9,12 @@
       "name": "metriport-link-patient",
       "source": "src/metriportLinkPatient.ts",
       "dist": "dist/metriportLinkPatient.js"
+    },
+    {
+      "name": "metriport-consolidated",
+      "source": "src/metriportConsolidated.ts",
+      "dist": "dist/metriportConsolidated.js",
+      "timeout": 60
     }
   ]
 }
